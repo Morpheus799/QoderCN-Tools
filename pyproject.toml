@@ -1,0 +1,29 @@
+[project]
+name = "qodercn-tools"
+version = "0.1.0"
+description = "Standalone HTTP service re-exposing the QoderCN gateway's three built-in tools (imageGen / webSearch / imageSearch)"
+readme = "README.md"
+authors = [
+    { name = "e^iπ=-1", email = "92247184+Morpheus799@users.noreply.github.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "httpx>=0.27",
+    "cryptography>=43",
+    "pillow>=12.3.0",
+    "python-dotenv>=1.2.3",
+]
+
+[project.scripts]
+qodercn-tools = "qodercn_tools.__main__:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
