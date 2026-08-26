@@ -1,6 +1,6 @@
 # QoderCN Tools
 
-一个独立的服务，把 QoderCN 网关（`gateway.qoder.com.cn`）自带的工具重新暴露出来：三个 JSON 接口（webSearch / imageSearch / imageGen）、一个流式语音识别 WebSocket（asr）、一个文本润色透传接口（polish）。请求参数直接对应上游，服务内部只负责 COSY 签名。
+一个独立的服务，把 QoderCN 网关（`gateway.qoder.com.cn`）自带的工具重新暴露出来：三个 JSON 接口（webSearch / imageSearch / imageGen）、一个流式语音识别 WebSocket（asr）、一个文本润色透传接口（polish）。
 
 ### `POST /webSearch` → `oneSearch`
 
@@ -37,8 +37,7 @@
 
 流式语音识别，代理到网关的 `fun-asr-realtime`（阿里 FunASR，免费）。这是一个 **WebSocket**：客户端流式发送音频，服务端注入 COSY 签名后转发到上游。
 
-- **音频格式头由客户端负责**（原样透传）：`SampleRate`（**必须等于音频实际采样率**，否则转写乱码）、`Channels`、`BitDepth`、`FrameDurationMs`，以及可选 `Accept-Language`。
-- `X-Asr-Session-Id`（随机）与 `X-Business`（客户端标识，沿用 CLI 内置的 `product:"ide"`/`type:"asr_chat"`）由服务端自动注入，客户端无需提供。
+- **音频格式**：`SampleRate`（**必须等于音频实际采样率**，否则转写乱码）、`Channels`、`BitDepth`、`FrameDurationMs`，以及可选 `Accept-Language`。
 - **发送**：16-bit 小端裸 PCM 二进制帧（采样率/声道按你声明的头）；结束时发文本帧 `{"type":"voice_completed","message":"close by user"}`。
 - **接收**（网关下发的 JSON 文本帧）：
   - `{"type":"speech_delta","message":"<累积文本>","model_name":"fun-asr-realtime",...}` —— 中间结果（partial）
@@ -48,7 +47,7 @@
 
 ### `POST /polish` → `voice/polish`
 
-文本润色（给口述/ASR 文本加标点、规范大小写、英文顺手删口头禅与重复词；不改措辞、不翻译、不作答；免费）。客户端只需发 `messages`，`session_id`/`request_id` 由本服务随机生成、`client_type` 默认 `"5"`（网关只要求它们非空、不校验值）；上游响应原样返回。
+文本润色（给口述/ASR 文本加标点、规范大小写、英文顺手删口头禅与重复词）。客户端只需发 `messages`，`session_id`/`request_id` 由本服务随机生成、`client_type` 默认 `"5"`（网关只要求它们非空、不校验值）；上游响应原样返回。
 
 请求体：
 
