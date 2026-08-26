@@ -18,11 +18,10 @@ import uuid
 
 from .credentials import Credential, machine_os_header
 
-DEFAULT_COSY_VERSION = "2.11.2"
+DEFAULT_COSY_VERSION = "1.1.28"
 
 
 def compact_json(obj) -> str:
-    """Marshal like Go's encoding/json: compact, sorted keys, UTF-8 preserved."""
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
