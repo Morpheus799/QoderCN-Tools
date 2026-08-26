@@ -6,10 +6,11 @@ Recognised variables (see .env.example):
                  Empty/unset => no auth. Set but no valid keys => startup error.
   RM_BLIND_WM    true/false — remove the invisible blind watermark from generated images.
   RM_EXIF_INFO   true/false — strip the AIGC tracking metadata from generated images.
-  IMAGEGEN_URL / WEBSEARCH_URL / IMAGESEARCH_URL / ASR_URL
+  IMAGEGEN_URL / WEBSEARCH_URL / IMAGESEARCH_URL / ASR_URL / POLISH_URL
                  route path for each tool. Unset => that tool is not exposed.
                  All unset, an invalid path, or a collision => startup error.
-                 ASR_URL is a streaming WebSocket proxy (the others are POST).
+                 ASR_URL is a streaming WebSocket proxy; POLISH_URL is a raw
+                 pass-through POST; the rest are typed POST.
   PORT           listen port. -1 => auto-pick a free port. Occupied => startup error.
   IP             bind address (e.g. 127.0.0.1 or 0.0.0.0).
 """
@@ -34,6 +35,7 @@ SERVICES: tuple[tuple[str, str, str], ...] = (
     ("webSearch", "WEBSEARCH_URL", "/webSearch"),
     ("imageSearch", "IMAGESEARCH_URL", "/imageSearch"),
     ("asr", "ASR_URL", "/asr"),  # streaming WebSocket, not POST
+    ("polish", "POLISH_URL", "/polish"),  # raw pass-through POST (voice/polish)
 )
 RESERVED_PATHS = {"/health", "/docs", "/openapi.json", "/redoc"}
 _ROUTE_RE = re.compile(r"^/[A-Za-z0-9][A-Za-z0-9._~/-]*$")

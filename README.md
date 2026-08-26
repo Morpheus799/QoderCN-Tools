@@ -1,6 +1,6 @@
 # QoderCN Tools
 
-一个独立的服务，把 QoderCN 网关（`gateway.qoder.com.cn`）自带的工具重新暴露出来：三个 JSON 接口（webSearch / imageSearch / imageGen）加一个流式语音识别 WebSocket（asr）。请求参数直接对应上游，服务内部只负责 COSY 签名。
+一个独立的服务，把 QoderCN 网关（`gateway.qoder.com.cn`）自带的工具重新暴露出来：三个 JSON 接口（webSearch / imageSearch / imageGen）、一个流式语音识别 WebSocket（asr）、一个文本润色透传接口（polish）。请求参数直接对应上游，服务内部只负责 COSY 签名。
 
 ### `POST /webSearch` → `oneSearch`
 
@@ -35,26 +35,33 @@
 
 ### `WS /asr` → `ws/asr`
 
-流式语音识别，透传代理到网关的 `fun-asr-realtime`（阿里 FunASR，免费）。与上面三个不同，这是一个 **WebSocket**：客户端的握手头、音频帧、控制帧都原样转发到上游，服务内部只注入 COSY 签名。目前是**纯透传**——客户端需自行按下面的协议发送。
+流式语音识别，代理到网关的 `fun-asr-realtime`（阿里 FunASR，免费）。这是一个 **WebSocket**：客户端流式发送音频，服务端注入 COSY 签名后转发到上游。
 
-握手头（客户端提供，原样透传）：
-
-| 头 | 值 | 说明 |
-|---|---|---|
-| `SampleRate` | `16000` | 采样率 |
-| `FrameDurationMs` | `100` | 帧长（毫秒） |
-| `BitDepth` | `16` | 位深 |
-| `Channels` | `1` | 单声道 |
-| `X-Asr-Session-Id` | `<uuid>` | 本次会话 ID |
-| `X-Business` | `{"product":"ide","type":"asr_chat","id":<uuid>,"begin_at":<ms>,"name":"asr_chat-<uuid>"}` | 业务信封 |
-| `Accept-Language` | 如 `en-US` | 可选，识别语言 |
-
-- **发送**：原始 **16kHz 单声道 16-bit 小端 PCM** 二进制帧；结束时发一个文本帧 `{"type":"voice_completed","message":"close by user"}`。
+- **音频格式头由客户端负责**（原样透传）：`SampleRate`（**必须等于音频实际采样率**，否则转写乱码）、`Channels`、`BitDepth`、`FrameDurationMs`，以及可选 `Accept-Language`。
+- `X-Asr-Session-Id`（随机）与 `X-Business`（客户端标识，沿用 CLI 内置的 `product:"ide"`/`type:"asr_chat"`）由服务端自动注入，客户端无需提供。
+- **发送**：16-bit 小端裸 PCM 二进制帧（采样率/声道按你声明的头）；结束时发文本帧 `{"type":"voice_completed","message":"close by user"}`。
 - **接收**（网关下发的 JSON 文本帧）：
-  - `{"type":"speech_delta","message":"<累积文本>", "model_name":"fun-asr-realtime", ...}` —— 中间结果（partial）
-  - `{"type":"speech_completed","message":"<整句>", ...}` —— 分句定稿（已带标点、大小写）
+  - `{"type":"speech_delta","message":"<累积文本>","model_name":"fun-asr-realtime",...}` —— 中间结果（partial）
+  - `{"type":"speech_completed","message":"<整句>",...}` —— 分句定稿（已带标点、大小写）
   - `{"type":"speech_done","status":200}` —— 全部结束
   - `{"type":"speech_err","code":...,"message":...}` —— 出错
+
+### `POST /polish` → `voice/polish`
+
+文本润色（给口述/ASR 文本加标点、规范大小写、英文顺手删口头禅与重复词；不改措辞、不翻译、不作答；免费）。客户端只需发 `messages`，`session_id`/`request_id` 由本服务随机生成、`client_type` 默认 `"5"`（网关只要求它们非空、不校验值）；上游响应原样返回。
+
+请求体：
+
+```json
+{
+  "messages": [
+    {"role": "user", "content": "<transcription>要润色的原文</transcription>"}
+  ]
+}
+```
+
+- `<transcription>…</transcription>` 包裹是触发润色语义的约定（内容原样当文本处理）。
+- 响应原样返回上游 JSON：`{result: {content: "润色后文本"}, success: true, traceId}`。
 
 
 是否暴露某个接口、路由路径、鉴权、图像处理都由 `.env` 控制。
@@ -88,7 +95,7 @@ uv run qodercn-tools --env-file /path/to/other.env
 | `API_KEY_FILE` | 密钥文件路径（相对项目根，或绝对路径），一行一个 key，`#` 为注释。**留空 ⇒ 不鉴权。** key 只允许 `A-Za-z0-9_-@+=&*` 且长度 ≤ 50；出现其他字符、超长 key、或无有效 key ⇒ 启动失败。 |
 | `RM_EXIF_INFO` | `true`/`false` —— 剥离生成图片中的 AIGC 追踪元数据（无损）。 |
 | `RM_BLIND_WM` | `true`/`false` —— 破坏隐藏盲水印的载荷（几何去同步 + 有损重编码，会轻微改动像素，且不一定生效）。 |
-| `IMAGEGEN_URL` / `WEBSEARCH_URL` / `IMAGESEARCH_URL` / `ASR_URL` | 各工具的路由路径（`ASR_URL` 是 WebSocket，其余是 POST）。**不设置 ⇒ 不暴露该工具。** 全部不设置 / 路径非法 / 互相重合 ⇒ 启动失败。 |
+| `IMAGEGEN_URL` / `WEBSEARCH_URL` / `IMAGESEARCH_URL` / `ASR_URL` / `POLISH_URL` | 各工具的路由路径（`ASR_URL` 是 WebSocket，`POLISH_URL` 是原样透传 POST，其余是 POST）。**不设置 ⇒ 不暴露该工具。** 全部不设置 / 路径非法 / 互相重合 ⇒ 启动失败。 |
 | `IP` | 绑定地址 / 暴露面（`127.0.0.1` 仅本机，`0.0.0.0` 所有网卡）。 |
 | `PORT` | 监听端口。`-1` ⇒ 自动挑一个空闲端口；端口被占用 ⇒ 启动失败。 |
 

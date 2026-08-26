@@ -24,6 +24,7 @@ ONE_SEARCH_PATH = "/algo/api/v1/webSearch/oneSearch"
 IMAGE_SEARCH_PATH = "/algo/api/v2/service/pro/imageSearch"
 GENERATE_IMAGE_PATH = "/algo/api/v2/service/pro/generateImage"
 ASR_WS_PATH = "/api/v2/service/ws/asr"
+POLISH_PATH = "/algo/api/v2/service/voice/polish"
 
 
 class GatewayError(RuntimeError):
@@ -31,6 +32,19 @@ class GatewayError(RuntimeError):
         super().__init__(f"gateway status {status}: {detail}")
         self.status = status
         self.detail = detail
+
+
+def _asr_injected_headers() -> dict[str, str]:
+    """Headers the proxy injects into the ASR handshake: the CLI's built-in
+    X-Business client identity (04-voice-asr.js) with a random business id, plus a
+    random X-Asr-Session-Id. Audio-format headers are the caller's responsibility."""
+    biz_id = new_uuid()
+    business = json.dumps(
+        {"product": "ide", "type": "asr_chat", "id": biz_id,
+         "begin_at": int(time.time() * 1000), "name": f"asr_chat-{biz_id}"},
+        separators=(",", ":"), ensure_ascii=False,
+    )
+    return {"X-Asr-Session-Id": new_uuid(), "X-Business": business}
 
 
 class GatewayClient:
@@ -60,27 +74,34 @@ class GatewayClient:
         return self.base_url
 
     async def asr_connect(self, forward_headers: dict[str, str] | None = None):
-        """Open the gateway's ASR WebSocket, cosy-signed, forwarding caller headers.
+        """Open the gateway's ASR WebSocket, cosy-signed.
 
-        The signature is a GET on ASR_WS_PATH with empty body (method is not part of
-        the cosy preimage). Raises on handshake failure (e.g. bad credentials).
+        Injects the CLI's X-Business identity and a random X-Asr-Session-Id; the
+        audio-format headers (SampleRate/Channels/…) are forwarded as-is from the
+        caller (their responsibility). Caller headers win over injected ones. The
+        signature is a GET on ASR_WS_PATH with empty body. Raises on handshake failure.
         """
         cred = load_credential(self.auth_file)
         headers = build_headers(cred, ASR_WS_PATH, "", self.cosy_version)
         headers.pop("Content-Type", None)
         headers.pop("Accept", None)
-        # Merge case-insensitively to avoid duplicate header names (e.g. User-Agent),
-        # which websockets rejects; a forwarded header replaces the same cosy header.
-        if forward_headers:
-            by_lower = {k.lower(): k for k in headers}
-            for k, v in forward_headers.items():
-                existing = by_lower.get(k.lower())
-                if existing is not None:
-                    headers.pop(existing, None)
-                headers[k] = v
-        url = self._ws_base() + ASR_WS_PATH
+        # Layer case-insensitively (avoids duplicate header names, which websockets
+        # rejects): cosy auth, then injected identity, then caller headers win.
+        by_lower = {k.lower(): k for k in headers}
+
+        def put(k: str, v: str) -> None:
+            existing = by_lower.get(k.lower())
+            if existing is not None and existing != k:
+                headers.pop(existing, None)
+            by_lower[k.lower()] = k
+            headers[k] = v
+
+        for k, v in _asr_injected_headers().items():
+            put(k, v)
+        for k, v in (forward_headers or {}).items():
+            put(k, v)
         return await websockets.connect(
-            url,
+            self._ws_base() + ASR_WS_PATH,
             additional_headers=headers,
             proxy=self.proxy_url,  # None => no proxy (do not read env)
             open_timeout=self._ws_timeout,
@@ -106,6 +127,22 @@ class GatewayClient:
             return resp.json()
         except json.JSONDecodeError as exc:
             raise GatewayError(resp.status_code, f"invalid JSON response: {exc}") from exc
+
+    async def polish(self, payload: dict) -> tuple[int, bytes, str]:
+        """POST payload to voice/polish (plain signed, no Encode envelope).
+
+        session_id / request_id are generated here and client_type defaults to "5"
+        (the gateway only requires these present and non-empty, not any real value).
+        Returns the upstream (status, content, content-type) verbatim.
+        """
+        payload = {**payload, "session_id": new_uuid(), "request_id": new_uuid()}
+        if not payload.get("client_type"):
+            payload["client_type"] = "5"
+        body = compact_json(payload)
+        cred = load_credential(self.auth_file)
+        headers = build_headers(cred, POLISH_PATH, body, self.cosy_version)
+        resp = await self._client.post(self.base_url + POLISH_PATH, content=body.encode("utf-8"), headers=headers)
+        return resp.status_code, resp.content, resp.headers.get("content-type", "application/json")
 
     async def web_search(self, query: str, time_range: str = "NoLimit", contents: dict | None = None) -> dict:
         inner = {

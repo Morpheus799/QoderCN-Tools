@@ -1,9 +1,11 @@
 """FastAPI application exposing the QoderCN gateway tools.
 
 Which tools are exposed, and at what paths, is driven by settings.routes (from
-IMAGEGEN_URL / WEBSEARCH_URL / IMAGESEARCH_URL / ASR_URL). Request parameters follow
-the upstream gateway; only the qoder cosy auth is handled internally. ASR is a
-streaming WebSocket proxy; the rest are POST.
+IMAGEGEN_URL / WEBSEARCH_URL / IMAGESEARCH_URL / ASR_URL / POLISH_URL). Request
+parameters follow the upstream gateway; only the qoder cosy auth is handled
+internally. ASR is a streaming WebSocket proxy; polish forwards the JSON body to
+voice/polish (session/request ids auto-filled) and returns the response verbatim;
+the rest are typed POST.
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ from contextlib import asynccontextmanager
 
 import websockets
 from fastapi import Depends, FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from . import __version__
@@ -138,6 +140,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def image_search(req: ImageSearchRequest, request: Request):
         return await request.app.state.gateway.image_search(req.query, req.count)
 
+    async def polish(request: Request):
+        """Forward the JSON body to voice/polish (ids auto-filled), return upstream verbatim."""
+        try:
+            payload = await request.json()
+        except Exception:
+            return JSONResponse(status_code=400, content={"error": "request body must be JSON"})
+        if not isinstance(payload, dict):
+            return JSONResponse(status_code=400, content={"error": "request body must be a JSON object"})
+        status, content, ctype = await request.app.state.gateway.polish(payload)
+        return Response(content=content, status_code=status, media_type=ctype)
+
     async def image_gen(req: ImageGenRequest, request: Request):
         result = await request.app.state.gateway.generate_image(req.prompt, req.size, req.model)
         if isinstance(result.get("data"), list):
@@ -172,7 +185,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except WebSocketDisconnect:
             await upstream.close()
 
-    post_handlers = {"webSearch": web_search, "imageSearch": image_search, "imageGen": image_gen}
+    post_handlers = {"webSearch": web_search, "imageSearch": image_search, "imageGen": image_gen, "polish": polish}
     for name, path in settings.routes.items():
         if name == "asr":
             app.add_api_websocket_route(path, asr, name="asr")
