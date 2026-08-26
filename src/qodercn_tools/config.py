@@ -1,18 +1,5 @@
 """Runtime configuration, driven by a project-root .env file (with real
 environment variables taking precedence).
-
-Recognised variables (see .env.example):
-  API_KEY_FILE   path (relative to project) to a key file, one key per line, # comments.
-                 Empty/unset => no auth. Set but no valid keys => startup error.
-  RM_BLIND_WM    true/false — remove the invisible blind watermark from generated images.
-  RM_EXIF_INFO   true/false — strip the AIGC tracking metadata from generated images.
-  IMAGEGEN_URL / WEBSEARCH_URL / IMAGESEARCH_URL / ASR_URL / POLISH_URL
-                 route path for each tool. Unset => that tool is not exposed.
-                 All unset, an invalid path, or a collision => startup error.
-                 ASR_URL is a streaming WebSocket proxy; POLISH_URL is a raw
-                 pass-through POST; the rest are typed POST.
-  PORT           listen port. -1 => auto-pick a free port. Occupied => startup error.
-  IP             bind address (e.g. 127.0.0.1 or 0.0.0.0).
 """
 
 from __future__ import annotations
@@ -29,18 +16,15 @@ from .gateway import DEFAULT_BASE_URL
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-# (service name, env var, example/default path)
 SERVICES: tuple[tuple[str, str, str], ...] = (
     ("imageGen", "IMAGEGEN_URL", "/imageGen"),
     ("webSearch", "WEBSEARCH_URL", "/webSearch"),
     ("imageSearch", "IMAGESEARCH_URL", "/imageSearch"),
-    ("asr", "ASR_URL", "/asr"),  # streaming WebSocket, not POST
-    ("polish", "POLISH_URL", "/polish"),  # raw pass-through POST (voice/polish)
+    ("asr", "ASR_URL", "/asr"),
+    ("polish", "POLISH_URL", "/polish"),
 )
-RESERVED_PATHS = {"/health", "/docs", "/openapi.json", "/redoc"}
+RESERVED_PATHS = {"/health", "/docs", "/openapi.json", "/redoc", "/v1/image/generations", "/v1/image/generations", "/v1/audio/transcriptions", "/v1/realtime"}
 _ROUTE_RE = re.compile(r"^/[A-Za-z0-9][A-Za-z0-9._~/-]*$")
-# API keys may only contain letters, digits and _ - @ + = & * (avoid header/URL
-# characters that trip up clients), and be at most 50 chars. Anything else fails startup.
 _API_KEY_RE = re.compile(r"^[A-Za-z0-9_@+=&*-]+$")
 _API_KEY_MAX_LEN = 50
 
@@ -55,13 +39,12 @@ class ConfigError(RuntimeError):
 @dataclass
 class Settings:
     ip: str = "127.0.0.1"
-    port: int = 8790  # -1 => auto-pick a free port
-    routes: dict[str, str] = field(default_factory=dict)  # service name -> path
+    port: int = 8790
+    routes: dict[str, str] = field(default_factory=dict)
     auth_enabled: bool = False
     api_keys: list[str] = field(default_factory=list)
     rm_blind_wm: bool = False
     rm_exif_info: bool = True
-    # upstream (advanced; sensible defaults)
     base_url: str = DEFAULT_BASE_URL
     auth_file: str | None = None
     cosy_version: str = DEFAULT_COSY_VERSION
@@ -109,7 +92,7 @@ def _resolve_routes() -> dict[str, str]:
 def _load_api_keys() -> tuple[bool, list[str]]:
     raw = os.environ.get("API_KEY_FILE")
     if raw is None or not raw.strip():
-        return False, []  # unset/empty => no auth
+        return False, []
     path = Path(raw.strip())
     if not path.is_absolute():
         path = PROJECT_ROOT / path
