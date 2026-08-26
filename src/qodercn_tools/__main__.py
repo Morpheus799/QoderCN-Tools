@@ -16,14 +16,13 @@ from .config import ConfigError, Settings, load_settings
 
 
 def _resolve_port(ip: str, port: int) -> int:
-    """Auto-pick a free port when port == -1, else verify it is not occupied."""
     if port == -1:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind((ip, 0))
             return s.getsockname()[1]
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         try:
-            s.bind((ip, port))  # no SO_REUSEADDR: an active listener reliably fails
+            s.bind((ip, port))
         except OSError as exc:
             raise SystemExit(f"PORT {port} on {ip} is already in use: {exc}")
     return port
