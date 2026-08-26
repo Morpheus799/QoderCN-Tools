@@ -56,7 +56,6 @@
   - `{"type":"speech_done","status":200}` —— 全部结束
   - `{"type":"speech_err","code":...,"message":...}` —— 出错
 
-> 后续计划：加一个 OpenAI 兼容的 `/v1/audio/transcriptions`（上传音频文件 → 内部转 16k PCM → 走本 WS → 聚合返回 `{"text"}`），让普通 OpenAI 客户端零门槛调用。
 
 是否暴露某个接口、路由路径、鉴权、图像处理都由 `.env` 控制。
 
