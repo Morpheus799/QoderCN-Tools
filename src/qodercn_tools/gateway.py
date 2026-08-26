@@ -1,8 +1,9 @@
-"""Async HTTP client for the three QoderCN gateway tools.
+"""Async client for the QoderCN gateway tools.
 
-All three POST the Encode=0 envelope {"payload":"<inner json>","encodeVersion":"1"}
-(generateImage additionally carries sessionId/requestId) to
-https://lingma.alibabacloud.com, cosy-signed per request.
+web/image search + generateImage POST the Encode=0 envelope
+{"payload":"<inner json>","encodeVersion":"1"} (generateImage also carries
+sessionId/requestId); voice/polish is a plain signed POST (no envelope); ASR is a
+WebSocket. All are cosy-signed per request against the configured base URL.
 """
 
 from __future__ import annotations
@@ -109,17 +110,12 @@ class GatewayClient:
             max_size=None,  # transcripts are small; audio is client->server only
         )
 
-    async def _post_encoded(self, path: str, inner: dict, extra_outer: dict | None = None) -> dict:
-        outer = {"payload": compact_json(inner), "encodeVersion": "1"}
-        if extra_outer:
-            outer.update(extra_outer)
-        body = compact_json(outer)
-
+    async def _post_signed(self, path: str, body: str, params: dict | None = None) -> dict:
+        """Cosy-signed POST of a raw JSON body; returns parsed JSON or raises GatewayError."""
         cred = load_credential(self.auth_file)
         headers = build_headers(cred, path, body, self.cosy_version)
-
         resp = await self._client.post(
-            self.base_url + path, params={"Encode": "0"}, content=body.encode("utf-8"), headers=headers
+            self.base_url + path, params=params, content=body.encode("utf-8"), headers=headers
         )
         if resp.status_code >= 400:
             raise GatewayError(resp.status_code, resp.text[:200])
@@ -128,21 +124,25 @@ class GatewayClient:
         except json.JSONDecodeError as exc:
             raise GatewayError(resp.status_code, f"invalid JSON response: {exc}") from exc
 
-    async def polish(self, payload: dict) -> tuple[int, bytes, str]:
-        """POST payload to voice/polish (plain signed, no Encode envelope).
+    async def _post_encoded(self, path: str, inner: dict, extra_outer: dict | None = None) -> dict:
+        outer = {"payload": compact_json(inner), "encodeVersion": "1"}
+        if extra_outer:
+            outer.update(extra_outer)
+        return await self._post_signed(path, compact_json(outer), params={"Encode": "0"})
 
-        session_id / request_id are generated here and client_type defaults to "5"
-        (the gateway only requires these present and non-empty, not any real value).
-        Returns the upstream (status, content, content-type) verbatim.
+    async def polish(self, text: str) -> dict:
+        """Clean up text via voice/polish (plain signed POST, no Encode envelope).
+
+        session_id/request_id are generated and client_type is "5" (the gateway only
+        requires them present and non-empty). Returns the parsed upstream JSON.
         """
-        payload = {**payload, "session_id": new_uuid(), "request_id": new_uuid()}
-        if not payload.get("client_type"):
-            payload["client_type"] = "5"
-        body = compact_json(payload)
-        cred = load_credential(self.auth_file)
-        headers = build_headers(cred, POLISH_PATH, body, self.cosy_version)
-        resp = await self._client.post(self.base_url + POLISH_PATH, content=body.encode("utf-8"), headers=headers)
-        return resp.status_code, resp.content, resp.headers.get("content-type", "application/json")
+        inner = {
+            "session_id": new_uuid(),
+            "request_id": new_uuid(),
+            "client_type": "5",
+            "messages": [{"role": "user", "content": f"<transcription>{text}</transcription>"}],
+        }
+        return await self._post_signed(POLISH_PATH, compact_json(inner))
 
     async def web_search(self, query: str, time_range: str = "NoLimit", contents: dict | None = None) -> dict:
         inner = {

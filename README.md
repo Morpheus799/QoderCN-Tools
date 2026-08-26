@@ -47,20 +47,15 @@
 
 ### `POST /polish` → `voice/polish`
 
-文本润色（给口述/ASR 文本加标点、规范大小写、英文顺手删口头禅与重复词）。客户端只需发 `messages`，`session_id`/`request_id` 由本服务随机生成、`client_type` 默认 `"5"`（网关只要求它们非空、不校验值）；上游响应原样返回。
+文本润色（给口述/ASR 文本加标点、规范大小写、英文顺手删口头禅与重复词；不改措辞、不翻译、不作答；免费）。
 
-请求体：
+| 字段 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `text` | string | （必填） | 要润色的原文（口述/ASR 文本） |
 
-```json
-{
-  "messages": [
-    {"role": "user", "content": "<transcription>要润色的原文</transcription>"}
-  ]
-}
-```
+服务端自动用 `<transcription>` 包裹、生成 session/request id（`client_type` 固定 `"5"`）。返回上游原样 JSON：`{result:{content:"润色后文本"}, success, traceId}`。
 
-- `<transcription>…</transcription>` 包裹是触发润色语义的约定（内容原样当文本处理）。
-- 响应原样返回上游 JSON：`{result: {content: "润色后文本"}, success: true, traceId}`。
+示例：`嗯那个我们明天上午十点开会` → `嗯，那个，我们明天上午十点开会。`；`so um i think we should uh refactor` → `So I think we should refactor.`
 
 
 是否暴露某个接口、路由路径、鉴权、图像处理都由 `.env` 控制。

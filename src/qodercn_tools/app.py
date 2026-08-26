@@ -3,9 +3,7 @@
 Which tools are exposed, and at what paths, is driven by settings.routes (from
 IMAGEGEN_URL / WEBSEARCH_URL / IMAGESEARCH_URL / ASR_URL / POLISH_URL). Request
 parameters follow the upstream gateway; only the qoder cosy auth is handled
-internally. ASR is a streaming WebSocket proxy; polish forwards the JSON body to
-voice/polish (session/request ids auto-filled) and returns the response verbatim;
-the rest are typed POST.
+internally. ASR is a streaming WebSocket proxy; the rest (incl. polish) are typed POST.
 """
 
 from __future__ import annotations
@@ -15,7 +13,7 @@ from contextlib import asynccontextmanager
 
 import websockets
 from fastapi import Depends, FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from . import __version__
@@ -70,6 +68,10 @@ class ImageGenRequest(BaseModel):
     prompt: str = Field(..., min_length=1)
     size: str = Field("1024x1024", description="Aspect-ratio preset, one of: " + ", ".join(IMAGE_SIZES))
     model: str = "qmodel_38max"
+
+
+class PolishRequest(BaseModel):
+    text: str = Field(..., min_length=1, description="Raw dictation/ASR text to clean up (punctuation, casing; no rewrite/translate).")
 
 
 async def _relay_asr(client: WebSocket, upstream) -> None:
@@ -140,16 +142,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def image_search(req: ImageSearchRequest, request: Request):
         return await request.app.state.gateway.image_search(req.query, req.count)
 
-    async def polish(request: Request):
-        """Forward the JSON body to voice/polish (ids auto-filled), return upstream verbatim."""
-        try:
-            payload = await request.json()
-        except Exception:
-            return JSONResponse(status_code=400, content={"error": "request body must be JSON"})
-        if not isinstance(payload, dict):
-            return JSONResponse(status_code=400, content={"error": "request body must be a JSON object"})
-        status, content, ctype = await request.app.state.gateway.polish(payload)
-        return Response(content=content, status_code=status, media_type=ctype)
+    async def polish(req: PolishRequest, request: Request):
+        return await request.app.state.gateway.polish(req.text)
 
     async def image_gen(req: ImageGenRequest, request: Request):
         result = await request.app.state.gateway.generate_image(req.prompt, req.size, req.model)
