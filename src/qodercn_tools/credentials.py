@@ -1,6 +1,6 @@
 """Load QoderCN gateway credentials.
 
-Two sources, mirroring the Go proxy's loader:
+Two sources:
   1. An explicit plaintext auth file (JSON) — see `storedCredentialFile` shape.
   2. The QoderCN IDE/CLI login cache — an AES-128-CBC blob whose key and IV are
      both the first 16 bytes of the machine id, PKCS#7 padded.
