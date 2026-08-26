@@ -6,9 +6,10 @@ Recognised variables (see .env.example):
                  Empty/unset => no auth. Set but no valid keys => startup error.
   RM_BLIND_WM    true/false — remove the invisible blind watermark from generated images.
   RM_EXIF_INFO   true/false — strip the AIGC tracking metadata from generated images.
-  IMAGEGEN_URL / WEBSEARCH_URL / IMAGESEARCH_URL
+  IMAGEGEN_URL / WEBSEARCH_URL / IMAGESEARCH_URL / ASR_URL
                  route path for each tool. Unset => that tool is not exposed.
                  All unset, an invalid path, or a collision => startup error.
+                 ASR_URL is a streaming WebSocket proxy (the others are POST).
   PORT           listen port. -1 => auto-pick a free port. Occupied => startup error.
   IP             bind address (e.g. 127.0.0.1 or 0.0.0.0).
 """
@@ -32,6 +33,7 @@ SERVICES: tuple[tuple[str, str, str], ...] = (
     ("imageGen", "IMAGEGEN_URL", "/imageGen"),
     ("webSearch", "WEBSEARCH_URL", "/webSearch"),
     ("imageSearch", "IMAGESEARCH_URL", "/imageSearch"),
+    ("asr", "ASR_URL", "/asr"),  # streaming WebSocket, not POST
 )
 RESERVED_PATHS = {"/health", "/docs", "/openapi.json", "/redoc"}
 _ROUTE_RE = re.compile(r"^/[A-Za-z0-9][A-Za-z0-9._~/-]*$")
@@ -97,7 +99,7 @@ def _resolve_routes() -> dict[str, str]:
         routes[name] = path
     if not routes:
         raise ConfigError(
-            "no services enabled: set at least one of IMAGEGEN_URL / WEBSEARCH_URL / IMAGESEARCH_URL"
+            "no services enabled: set at least one of " + " / ".join(var for _, var, _ in SERVICES)
         )
     return routes
 

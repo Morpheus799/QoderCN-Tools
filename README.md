@@ -1,13 +1,13 @@
 # QoderCN Tools
 
-一个独立的 HTTP 服务，把 QoderCN 网关（`gateway.qoder.com.cn`）自带的三个工具重新暴露成普通 JSON 接口。请求体字段直接对应上游 payload，服务内部只负责 COSY 签名。
+一个独立的服务，把 QoderCN 网关（`gateway.qoder.com.cn`）自带的工具重新暴露出来：三个 JSON 接口（webSearch / imageSearch / imageGen）加一个流式语音识别 WebSocket（asr）。请求参数直接对应上游，服务内部只负责 COSY 签名。
 
 ### `POST /webSearch` → `oneSearch`
 
 | 字段 | 类型 | 默认 | 说明 |
 |---|---|---|---|
 | `query` | string | （必填） | 搜索词 |
-| `timeRange` | string | `NoLimit` | 时间过滤，仅认 `NoLimit`/`OneDay`/`OneWeek`/`OneMonth`/`OneYear`（近1天/周/月/年）；其他值被网关静默当作 `NoLimit`、不报错 |
+| `timeRange` | string | `NoLimit` | 时间过滤，仅认 `NoLimit`/`OneDay`/`OneWeek`/`OneMonth`/`OneYear`（近1天/周/月/年） |
 | `contents.mainText` | bool | `false` | 每条结果的完整正文抽取（约 1.6KB/条，全部结果） |
 | `contents.markdownText` | bool | `false` | markdown 版正文（尽力而为，只有部分页面能抽出） |
 | `contents.summary` | bool | `true` | AI 合成的总结（约 0.55KB/条，几乎每条都有） |
@@ -32,6 +32,31 @@
 | `model` | string | `qmodel_38max` | 生图模型 |
 
 `size` 可选值（宽高比）：`1024x1024`(1:1)、`1536x1024`(3:2)、`1024x1536`(2:3)、`768x1024`(3:4)、`1024x768`(4:3)、`1024x1280`(4:5)、`1280x1024`(5:4)、`1024x1792`(9:16)、`1792x1024`(16:9)、`2560x1080`(21:9)。为向前兼容不做硬校验，非法值由上游报错。返回：`{created, data:[{url: data-url}], usage}`。
+
+### `WS /asr` → `ws/asr`
+
+流式语音识别，透传代理到网关的 `fun-asr-realtime`（阿里 FunASR，免费）。与上面三个不同，这是一个 **WebSocket**：客户端的握手头、音频帧、控制帧都原样转发到上游，服务内部只注入 COSY 签名。目前是**纯透传**——客户端需自行按下面的协议发送。
+
+握手头（客户端提供，原样透传）：
+
+| 头 | 值 | 说明 |
+|---|---|---|
+| `SampleRate` | `16000` | 采样率 |
+| `FrameDurationMs` | `100` | 帧长（毫秒） |
+| `BitDepth` | `16` | 位深 |
+| `Channels` | `1` | 单声道 |
+| `X-Asr-Session-Id` | `<uuid>` | 本次会话 ID |
+| `X-Business` | `{"product":"ide","type":"asr_chat","id":<uuid>,"begin_at":<ms>,"name":"asr_chat-<uuid>"}` | 业务信封 |
+| `Accept-Language` | 如 `en-US` | 可选，识别语言 |
+
+- **发送**：原始 **16kHz 单声道 16-bit 小端 PCM** 二进制帧；结束时发一个文本帧 `{"type":"voice_completed","message":"close by user"}`。
+- **接收**（网关下发的 JSON 文本帧）：
+  - `{"type":"speech_delta","message":"<累积文本>", "model_name":"fun-asr-realtime", ...}` —— 中间结果（partial）
+  - `{"type":"speech_completed","message":"<整句>", ...}` —— 分句定稿（已带标点、大小写）
+  - `{"type":"speech_done","status":200}` —— 全部结束
+  - `{"type":"speech_err","code":...,"message":...}` —— 出错
+
+> 后续计划：加一个 OpenAI 兼容的 `/v1/audio/transcriptions`（上传音频文件 → 内部转 16k PCM → 走本 WS → 聚合返回 `{"text"}`），让普通 OpenAI 客户端零门槛调用。
 
 是否暴露某个接口、路由路径、鉴权、图像处理都由 `.env` 控制。
 
@@ -64,13 +89,13 @@ uv run qodercn-tools --env-file /path/to/other.env
 | `API_KEY_FILE` | 密钥文件路径（相对项目根，或绝对路径），一行一个 key，`#` 为注释。**留空 ⇒ 不鉴权。** key 只允许 `A-Za-z0-9_-@+=&*` 且长度 ≤ 50；出现其他字符、超长 key、或无有效 key ⇒ 启动失败。 |
 | `RM_EXIF_INFO` | `true`/`false` —— 剥离生成图片中的 AIGC 追踪元数据（无损）。 |
 | `RM_BLIND_WM` | `true`/`false` —— 破坏隐藏盲水印的载荷（几何去同步 + 有损重编码，会轻微改动像素，且不一定生效）。 |
-| `IMAGEGEN_URL` / `WEBSEARCH_URL` / `IMAGESEARCH_URL` | 各工具的路由路径。**不设置 ⇒ 不暴露该工具。** 全部不设置 / 路径非法 / 互相重合 ⇒ 启动失败。 |
+| `IMAGEGEN_URL` / `WEBSEARCH_URL` / `IMAGESEARCH_URL` / `ASR_URL` | 各工具的路由路径（`ASR_URL` 是 WebSocket，其余是 POST）。**不设置 ⇒ 不暴露该工具。** 全部不设置 / 路径非法 / 互相重合 ⇒ 启动失败。 |
 | `IP` | 绑定地址 / 暴露面（`127.0.0.1` 仅本机，`0.0.0.0` 所有网卡）。 |
 | `PORT` | 监听端口。`-1` ⇒ 自动挑一个空闲端口；端口被占用 ⇒ 启动失败。 |
 
 进阶（可选）：`QODERCN_BASE_URL`、`QODERCN_AUTH_FILE`、`LINGMA_CACHE_DIR`、`QODERCN_UPSTREAM_PROXY`、`QODERCN_COSY_VERSION`、`QODERCN_TIMEOUT` —— 详见 `.env.example`。
 
-鉴权：请求头带 `x-api-key: <key>` 或 `Authorization: Bearer <key>`。
+鉴权：请求头带 `x-api-key: <key>` 或 `Authorization: Bearer <key>`；WebSocket（`/asr`）还可用 query `?api_key=<key>` 或 `?token=<key>`。
 
 `QODERCN_AUTH_FILE` 指向的明文凭据文件格式：
 

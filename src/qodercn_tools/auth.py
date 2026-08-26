@@ -2,12 +2,15 @@
 
 Accepts the key via `x-api-key` or `Authorization: Bearer <key>`. Constant-time
 compared against the configured keys. Auth is skipped entirely when API_KEY_FILE
-is unset/empty (settings.auth_enabled is False).
+is unset/empty (settings.auth_enabled is False). WebSocket routes additionally
+accept the key via an `?api_key=`/`?token=` query param (browser WS clients cannot
+set headers).
 """
 
 from __future__ import annotations
 
 import hmac
+from typing import Mapping
 
 from fastapi import Header, HTTPException, Request
 
@@ -38,3 +41,15 @@ async def require_api_key(
     candidate = _extract_key(x_api_key, authorization)
     if not candidate or not _matches(candidate, settings.api_keys):
         raise HTTPException(status_code=401, detail="invalid or missing API key")
+
+
+def check_ws_api_key(settings, headers: Mapping[str, str], query_params: Mapping[str, str]) -> bool:
+    """WebSocket API-key check: key via header or ?api_key=/?token= query."""
+    if not settings.auth_enabled:
+        return True
+    candidate = _extract_key(headers.get("x-api-key"), headers.get("authorization"))
+    if not candidate:
+        candidate = query_params.get("api_key") or query_params.get("token")
+    if not candidate:
+        return False
+    return _matches(candidate.strip(), settings.api_keys)

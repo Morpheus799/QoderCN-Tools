@@ -11,6 +11,7 @@ import json
 import time
 
 import httpx
+import websockets
 
 from .cosy import DEFAULT_COSY_VERSION, build_headers, compact_json, new_uuid
 from .credentials import load_credential
@@ -22,6 +23,7 @@ DEFAULT_BASE_URL = "https://gateway.qoder.com.cn"
 ONE_SEARCH_PATH = "/algo/api/v1/webSearch/oneSearch"
 IMAGE_SEARCH_PATH = "/algo/api/v2/service/pro/imageSearch"
 GENERATE_IMAGE_PATH = "/algo/api/v2/service/pro/generateImage"
+ASR_WS_PATH = "/api/v2/service/ws/asr"
 
 
 class GatewayError(RuntimeError):
@@ -43,10 +45,48 @@ class GatewayClient:
         self.base_url = base_url.rstrip("/")
         self.auth_file = auth_file
         self.cosy_version = cosy_version
+        self.proxy_url = proxy_url
+        self._ws_timeout = timeout
         self._client = httpx.AsyncClient(timeout=timeout, proxy=proxy_url)
 
     async def aclose(self) -> None:
         await self._client.aclose()
+
+    def _ws_base(self) -> str:
+        if self.base_url.startswith("https://"):
+            return "wss://" + self.base_url[len("https://"):]
+        if self.base_url.startswith("http://"):
+            return "ws://" + self.base_url[len("http://"):]
+        return self.base_url
+
+    async def asr_connect(self, forward_headers: dict[str, str] | None = None):
+        """Open the gateway's ASR WebSocket, cosy-signed, forwarding caller headers.
+
+        The signature is a GET on ASR_WS_PATH with empty body (method is not part of
+        the cosy preimage). Raises on handshake failure (e.g. bad credentials).
+        """
+        cred = load_credential(self.auth_file)
+        headers = build_headers(cred, ASR_WS_PATH, "", self.cosy_version)
+        headers.pop("Content-Type", None)
+        headers.pop("Accept", None)
+        # Merge case-insensitively to avoid duplicate header names (e.g. User-Agent),
+        # which websockets rejects; a forwarded header replaces the same cosy header.
+        if forward_headers:
+            by_lower = {k.lower(): k for k in headers}
+            for k, v in forward_headers.items():
+                existing = by_lower.get(k.lower())
+                if existing is not None:
+                    headers.pop(existing, None)
+                headers[k] = v
+        url = self._ws_base() + ASR_WS_PATH
+        return await websockets.connect(
+            url,
+            additional_headers=headers,
+            proxy=self.proxy_url,  # None => no proxy (do not read env)
+            open_timeout=self._ws_timeout,
+            close_timeout=5,
+            max_size=None,  # transcripts are small; audio is client->server only
+        )
 
     async def _post_encoded(self, path: str, inner: dict, extra_outer: dict | None = None) -> dict:
         outer = {"payload": compact_json(inner), "encodeVersion": "1"}

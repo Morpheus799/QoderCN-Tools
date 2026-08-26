@@ -1,24 +1,36 @@
 """FastAPI application exposing the QoderCN gateway tools.
 
-Which tools are exposed, and at what paths, is driven entirely by settings.routes
-(from IMAGEGEN_URL / WEBSEARCH_URL / IMAGESEARCH_URL). Request parameters follow the
-upstream gateway; only the qoder cosy auth is handled internally.
+Which tools are exposed, and at what paths, is driven by settings.routes (from
+IMAGEGEN_URL / WEBSEARCH_URL / IMAGESEARCH_URL / ASR_URL). Request parameters follow
+the upstream gateway; only the qoder cosy auth is handled internally. ASR is a
+streaming WebSocket proxy; the rest are POST.
 """
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Request
+import websockets
+from fastapi import Depends, FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from . import __version__
-from .auth import require_api_key
+from .auth import check_ws_api_key, require_api_key
 from .config import Settings, load_settings
 from .credentials import CredentialError
 from .gateway import GatewayClient, GatewayError
 from .imageproc import dewatermark_data_url, sanitize_data_url
+
+# Client headers not forwarded to the upstream ASR handshake (WS mechanics, inbound
+# auth, and cosy-* which are re-injected); everything else passes through.
+_WS_DROP_HEADERS = {
+    "host", "connection", "upgrade", "content-length", "content-type",
+    "sec-websocket-key", "sec-websocket-version", "sec-websocket-extensions",
+    "sec-websocket-protocol", "sec-websocket-accept",
+    "authorization", "x-api-key",
+}
 
 
 # Valid generateImage sizes (from the QoderCN CLI's ImageGen schema); not enforced
@@ -56,6 +68,36 @@ class ImageGenRequest(BaseModel):
     prompt: str = Field(..., min_length=1)
     size: str = Field("1024x1024", description="Aspect-ratio preset, one of: " + ", ".join(IMAGE_SIZES))
     model: str = "qmodel_38max"
+
+
+async def _relay_asr(client: WebSocket, upstream) -> None:
+    """Relay WebSocket frames both ways until either side closes."""
+
+    async def client_to_upstream() -> None:
+        while True:
+            msg = await client.receive()
+            if msg["type"] == "websocket.disconnect":
+                return
+            if msg.get("bytes") is not None:
+                await upstream.send(msg["bytes"])
+            elif msg.get("text") is not None:
+                await upstream.send(msg["text"])
+
+    async def upstream_to_client() -> None:
+        async for frame in upstream:
+            if isinstance(frame, (bytes, bytearray)):
+                await client.send_bytes(bytes(frame))
+            else:
+                await client.send_text(frame)
+
+    tasks = [asyncio.create_task(client_to_upstream()), asyncio.create_task(upstream_to_client())]
+    try:
+        _, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+    finally:
+        await upstream.close()
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -109,10 +151,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     item["url"] = url
         return result
 
-    handlers = {"webSearch": web_search, "imageSearch": image_search, "imageGen": image_gen}
+    async def asr(websocket: WebSocket):
+        """WebSocket route: authenticate, then relay to the gateway ASR endpoint."""
+        if not check_ws_api_key(settings, websocket.headers, websocket.query_params):
+            await websocket.close(code=1008)
+            return
+        forward = {
+            k: v for k, v in websocket.headers.items()
+            if k.lower() not in _WS_DROP_HEADERS and not k.lower().startswith("cosy-")
+        }
+        gateway = websocket.app.state.gateway
+        try:
+            upstream = await gateway.asr_connect(forward)
+        except (GatewayError, CredentialError, OSError, websockets.exceptions.WebSocketException) as exc:
+            await websocket.close(code=1011, reason=str(exc)[:120])
+            return
+        await websocket.accept()
+        try:
+            await _relay_asr(websocket, upstream)
+        except WebSocketDisconnect:
+            await upstream.close()
+
+    post_handlers = {"webSearch": web_search, "imageSearch": image_search, "imageGen": image_gen}
     for name, path in settings.routes.items():
-        app.add_api_route(
-            path, handlers[name], methods=["POST"], name=name, dependencies=[Depends(require_api_key)]
-        )
+        if name == "asr":
+            app.add_api_websocket_route(path, asr, name="asr")
+        else:
+            app.add_api_route(
+                path, post_handlers[name], methods=["POST"], name=name,
+                dependencies=[Depends(require_api_key)],
+            )
 
     return app
