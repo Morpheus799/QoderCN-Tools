@@ -160,12 +160,16 @@ class GatewayClient:
         cosy_version: str = DEFAULT_COSY_VERSION,
         proxy_url: str | None = None,
         timeout: float = 60.0,
+        asr_idle_timeout: float = 60.0,
     ):
         self.base_url = base_url.rstrip("/")
         self.auth_file = auth_file
         self.cosy_version = cosy_version
         self.proxy_url = proxy_url
         self._ws_timeout = timeout
+        # Idle (inter-frame) timeout for transcription; deliberately NOT the total
+        # duration, so long audio is not bounded by QODERCN_TIMEOUT.
+        self._asr_idle_timeout = asr_idle_timeout
         self._client = httpx.AsyncClient(timeout=timeout, proxy=proxy_url)
 
     async def aclose(self) -> None:
@@ -257,7 +261,17 @@ class GatewayClient:
             await upstream.send(json.dumps({"type": "voice_completed", "message": "close by user"}))
 
         async def receiver() -> None:
-            async for frame in upstream:
+            # Idle (not total-duration) timeout: abort only if the gateway goes silent
+            # for asr_idle_timeout seconds, so long audio is not bounded by QODERCN_TIMEOUT.
+            # A healthy job streams partials/finals continuously, keeping the gap small
+            # even for 15-20 min audio; a genuinely dead connection still trips it.
+            while True:
+                try:
+                    frame = await asyncio.wait_for(upstream.recv(), timeout=self._asr_idle_timeout)
+                except asyncio.TimeoutError:
+                    raise GatewayError(504, f"asr idle timeout: no frames for {self._asr_idle_timeout:g}s")
+                except websockets.exceptions.ConnectionClosed:
+                    return  # upstream closed; use whatever was collected
                 if isinstance(frame, (bytes, bytearray)):
                     continue
                 try:
@@ -272,9 +286,7 @@ class GatewayClient:
         send_task = asyncio.create_task(sender())
         send_exc: Exception | None = None
         try:
-            await asyncio.wait_for(receiver(), timeout=self._ws_timeout)
-        except asyncio.TimeoutError:
-            raise GatewayError(504, "asr transcription timed out")
+            await receiver()
         finally:
             if not send_task.done():
                 send_task.cancel()

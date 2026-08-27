@@ -176,6 +176,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             cosy_version=settings.cosy_version,
             proxy_url=settings.proxy_url,
             timeout=settings.timeout,
+            asr_idle_timeout=settings.asr_idle_timeout,
         )
         try:
             yield

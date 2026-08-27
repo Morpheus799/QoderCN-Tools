@@ -73,6 +73,8 @@ OpenAI 音频转写 API 的兼容实现（`multipart/form-data` 上传），把�
 
 字幕时间戳（`srt`/`vtt`/`verbose_json` 的分段）：优先用网关按句返回的时间戳；网关不给时，**开启节奏**（`stream_realtime=true` 或 `ASR_REALTIME_PACING=true`）则用推流时间轴，否则按各句字数在总时长上按比例分配（较粗）。`json`/`text` 的文本内容不受时间戳影响，始终准确。
 
+转写**不受 `QODERCN_TIMEOUT` 限制**——它用的是"空闲超时"（`QODERCN_ASR_IDLE_TIMEOUT`，默认 60s）：只有网关连续多少秒不下发任何帧才中止，所以十几二十分钟的长音频也能转（正常转写时 partial 帧持续下发，空闲间隔很短）。
+
 
 是否暴露某个接口、路由路径、鉴权、图像处理都由 `.env` 控制。
 
@@ -110,7 +112,7 @@ uv run qodercn-tools --env-file /path/to/other.env
 | `IP` | 绑定地址 / 暴露面（`127.0.0.1` 仅本机，`0.0.0.0` 所有网卡）。 |
 | `PORT` | 监听端口。`-1` ⇒ 自动挑一个空闲端口；端口被占用 ⇒ 启动失败。 |
 
-进阶（可选）：`QODERCN_BASE_URL`、`QODERCN_AUTH_FILE`、`LINGMA_CACHE_DIR`、`QODERCN_UPSTREAM_PROXY`、`QODERCN_COSY_VERSION`、`QODERCN_TIMEOUT` —— 详见 `.env.example`。
+进阶（可选）：`QODERCN_BASE_URL`、`QODERCN_AUTH_FILE`、`LINGMA_CACHE_DIR`、`QODERCN_UPSTREAM_PROXY`、`QODERCN_COSY_VERSION`、`QODERCN_TIMEOUT`、`QODERCN_ASR_IDLE_TIMEOUT`（转写的空闲超时，默认 60s；转写时长不受 `QODERCN_TIMEOUT` 限制）—— 详见 `.env.example`。
 
 鉴权：请求头带 `x-api-key: <key>` 或 `Authorization: Bearer <key>`；WebSocket（`/asr`）还可用 query `?api_key=<key>` 或 `?token=<key>`。
 

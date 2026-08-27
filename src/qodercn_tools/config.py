@@ -52,6 +52,7 @@ class Settings:
     cosy_version: str = DEFAULT_COSY_VERSION
     proxy_url: str | None = None
     timeout: float = 60.0
+    asr_idle_timeout: float = 60.0
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -172,4 +173,5 @@ def load_settings(env_file: str | None = None) -> Settings:
         cosy_version=os.environ.get("QODERCN_COSY_VERSION", DEFAULT_COSY_VERSION),
         proxy_url=os.environ.get("QODERCN_UPSTREAM_PROXY") or os.environ.get("LINGMA_REMOTE_PROXY_URL"),
         timeout=float(os.environ.get("QODERCN_TIMEOUT", "60")),
+        asr_idle_timeout=float(os.environ.get("QODERCN_ASR_IDLE_TIMEOUT", "60")),
     )
