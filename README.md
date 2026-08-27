@@ -1,6 +1,9 @@
 # QoderCN Tools
 
-一个独立的服务，把 QoderCN 网关（`gateway.qoder.com.cn`）自带的工具重新暴露出来：三个 JSON 接口（webSearch / imageSearch / imageGen）、一个流式语音识别 WebSocket（asr）、一个文本润色透传接口（polish）。
+一个独立的服务，把 QoderCN 网关（`gateway.qoder.com.cn`）自带的工具重新暴露出来，有两种用法：
+
+- **HTTP 服务**（`qodercn-tools`）：三个 JSON 接口（webSearch / imageSearch / imageGen）、一个流式语音识别 WebSocket（asr）、一个文本润色接口（polish）、一个 OpenAI 兼容的音频转写接口（`/v1/audio/transcriptions`）。
+- **MCP 服务器**（`qodercn-tools-mcp`）：把同样的能力暴露成 MCP 工具，供 Claude Desktop / Cursor / Claude Code 等宿主直接调用（见文末 [作为 MCP 服务器使用](#作为-mcp-服务器使用stdio)）。
 
 ### `POST /webSearch` → `oneSearch`
 
@@ -147,6 +150,33 @@ curl -s http://127.0.0.1:8790/imageGen \
   -H "x-api-key: my-secret-key" -H "content-type: application/json" \
   -d '{"prompt": "桌上的一个红苹果"}'
 ```
+
+## 作为 MCP 服务器使用（stdio）
+
+除了 HTTP 服务，本项目还提供一个 MCP 服务器入口 `qodercn-tools-mcp`，把同样的能力暴露成 MCP 工具。它在进程内复用同一套网关客户端，走 **stdio** 传输，**不需要**路由 / 端口 / 鉴权配置——只用到上游与图像相关的设置（`QODERCN_*`、`RM_EXIF_INFO`、`RM_BLIND_WM`，以及可选 `QODERCN_IMAGE_DIR`），凭据同样从本地 QoderCN 缓存解密。
+
+宿主配置（`mcpServers`，把路径换成本仓库的绝对路径）：
+
+```json
+{
+  "mcpServers": {
+    "qodercn-tools": {
+      "command": "uv",
+      "args": ["--project", "/path/to/QoderCN-Tools", "run", "qodercn-tools-mcp"]
+    }
+  }
+}
+```
+
+提供的工具：
+
+| 工具 | 说明 |
+|---|---|
+| `web_search(query, time_range, main_text, markdown_text, summary)` | 网页搜索，返回上游 JSON |
+| `image_search(query, count)` | 图片搜索 |
+| `polish(text)` | 文本润色，返回润色后的纯文本 |
+| `image_gen(prompt, output_dir, size, model, filename, return_image)` | 生图并**保存到本地 PNG**，返回文件路径（**不回传 base64**，避免撑爆上下文）。`output_dir` 由模型指定（默认 `$QODERCN_IMAGE_DIR` 或系统临时目录）；`return_image=true` 时额外内联返回图片供模型查看。水印剥离沿用 `RM_EXIF_INFO`/`RM_BLIND_WM`。 |
+| `transcribe(file_path, language, response_format, stream_realtime)` | 转写**本地音频文件**（直接读取 `file_path`），`response_format` 支持 `text`/`json`/`verbose_json`/`srt`/`vtt`。长音频不受 `QODERCN_TIMEOUT` 限制（见上）。 |
 
 ## 关于生成图片的水印
 

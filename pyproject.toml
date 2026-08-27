@@ -18,10 +18,12 @@ dependencies = [
     "av>=12",
     "numpy>=1.24",
     "python-multipart>=0.0.9",
+    "mcp>=1.2",
 ]
 
 [project.scripts]
 qodercn-tools = "qodercn_tools.__main__:main"
+qodercn-tools-mcp = "qodercn_tools.mcp_server:main"
 
 [build-system]
 requires = ["uv_build>=0.12.5,<0.13.0"]

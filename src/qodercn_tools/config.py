@@ -150,17 +150,27 @@ def _parse_port() -> int:
     return port
 
 
-def load_settings(env_file: str | None = None) -> Settings:
-    """Load .env (from project root by default) then resolve + validate settings."""
+def load_settings(env_file: str | None = None, require_routes: bool = True) -> Settings:
+    """Load .env (from project root by default) then resolve + validate settings.
+
+    require_routes=False is for callers that use only the upstream/image settings and
+    not the HTTP route/auth/bind config (e.g. the MCP server): route resolution and
+    API-key loading are skipped (routes empty, auth off) instead of failing when no
+    route env var is set.
+    """
     path = Path(env_file) if env_file else PROJECT_ROOT / ".env"
     if path.is_file():
         load_dotenv(path, override=False)
 
-    auth_enabled, api_keys = _load_api_keys()
+    if require_routes:
+        auth_enabled, api_keys = _load_api_keys()
+        routes = _resolve_routes()
+    else:
+        auth_enabled, api_keys, routes = False, [], {}
     return Settings(
         ip=os.environ.get("IP", "127.0.0.1").strip() or "127.0.0.1",
         port=_parse_port(),
-        routes=_resolve_routes(),
+        routes=routes,
         auth_enabled=auth_enabled,
         api_keys=api_keys,
         rm_blind_wm=_env_bool("RM_BLIND_WM", False),
