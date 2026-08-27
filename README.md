@@ -35,7 +35,7 @@
 
 ### `WS /asr` → `ws/asr`
 
-流式语音识别，代理到网关的 `fun-asr-realtime`（阿里 FunASR，免费）。这是一个 **WebSocket**：客户端流式发送音频，服务端注入 COSY 签名后转发到上游。
+流式语音识别，代理到网关的 `fun-asr-realtime`（阿里 FunASR，免费）。这是一个 **WebSocket**：客户端流式发送音频，服务端注入 COSY 签名后转发到上游。实测可以转写几乎所有常用语言，且支持不同语言混用
 
 - **音频格式**：`SampleRate`（**必须等于音频实际采样率**，否则转写乱码）、`Channels`、`BitDepth`、`FrameDurationMs`，以及可选 `Accept-Language`。
 - **发送**：16-bit 小端裸 PCM 二进制帧（采样率/声道按你声明的头）；结束时发文本帧 `{"type":"voice_completed","message":"close by user"}`。
