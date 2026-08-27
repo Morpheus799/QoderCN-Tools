@@ -22,8 +22,9 @@ SERVICES: tuple[tuple[str, str, str], ...] = (
     ("imageSearch", "IMAGESEARCH_URL", "/imageSearch"),
     ("asr", "ASR_URL", "/asr"),
     ("polish", "POLISH_URL", "/polish"),
+    ("transcriptions", "OPENAI_TRANSCRIPTIONS_URL", "/v1/audio/transcriptions"),
 )
-RESERVED_PATHS = {"/health", "/docs", "/openapi.json", "/redoc", "/v1/image/generations", "/v1/image/generations", "/v1/audio/transcriptions", "/v1/realtime"}
+RESERVED_PATHS = {"/health", "/docs", "/openapi.json", "/redoc", "/v1/image/generations", "/v1/realtime"}
 _ROUTE_RE = re.compile(r"^/[A-Za-z0-9][A-Za-z0-9._~/-]*$")
 _API_KEY_RE = re.compile(r"^[A-Za-z0-9_@+=&*-]+$")
 _API_KEY_MAX_LEN = 50
@@ -45,6 +46,7 @@ class Settings:
     api_keys: list[str] = field(default_factory=list)
     rm_blind_wm: bool = False
     rm_exif_info: bool = True
+    asr_realtime_pacing: bool = False
     base_url: str = DEFAULT_BASE_URL
     auth_file: str | None = None
     cosy_version: str = DEFAULT_COSY_VERSION
@@ -162,6 +164,7 @@ def load_settings(env_file: str | None = None) -> Settings:
         api_keys=api_keys,
         rm_blind_wm=_env_bool("RM_BLIND_WM", False),
         rm_exif_info=_env_bool("RM_EXIF_INFO", True),
+        asr_realtime_pacing=_env_bool("ASR_REALTIME_PACING", False),
         base_url=os.environ.get("QODERCN_BASE_URL")
         or os.environ.get("LINGMA_REMOTE_BASE_URL")
         or DEFAULT_BASE_URL,

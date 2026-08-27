@@ -15,6 +15,9 @@ dependencies = [
     "pillow>=12.3.0",
     "python-dotenv>=1.2.3",
     "websockets>=15",
+    "av>=12",
+    "numpy>=1.24",
+    "python-multipart>=0.0.9",
 ]
 
 [project.scripts]

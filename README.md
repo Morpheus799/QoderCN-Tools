@@ -57,6 +57,22 @@
 
 示例：`嗯那个我们明天上午十点开会` → `嗯，那个，我们明天上午十点开会。`；`so um i think we should uh refactor` → `So I think we should refactor.`
 
+### `POST /v1/audio/transcriptions` → `ws/asr`（OpenAI 兼容）
+
+OpenAI 音频转写 API 的兼容实现（`multipart/form-data` 上传），把上传的音频解码后经网关 ASR（`fun-asr-realtime`）批量转写。可直接用 OpenAI SDK：把 `base_url` 指向本服务的 `/v1`、`api_key` 用本服务的 key 即可（`Authorization: Bearer` 会被识别）。
+
+| 字段 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `file` | 文件 | （必填） | 任意常见格式（mp3/m4a/webm/wav/…），内部用 PyAV 解码重采样为 16k 单声道 16-bit。上限 25MB |
+| `model` | string | `fun-asr-realtime` | 仅为兼容而接收；网关模型固定，忽略 |
+| `language` | string | 无 | 转成网关的 `Accept-Language` |
+| `response_format` | string | `json` | `json`（`{"text":...}`）/ `text` / `verbose_json` / `srt` / `vtt` |
+| `stream_realtime` | bool | 见 `ASR_REALTIME_PACING` | 本次是否按 1x 实时节奏推流（影响字幕时间戳精度，见下） |
+
+`prompt`/`temperature`/`timestamp_granularities` 为兼容而接收但忽略（网关无对应能力）。
+
+字幕时间戳（`srt`/`vtt`/`verbose_json` 的分段）：优先用网关按句返回的时间戳；网关不给时，**开启节奏**（`stream_realtime=true` 或 `ASR_REALTIME_PACING=true`）则用推流时间轴，否则按各句字数在总时长上按比例分配（较粗）。`json`/`text` 的文本内容不受时间戳影响，始终准确。
+
 
 是否暴露某个接口、路由路径、鉴权、图像处理都由 `.env` 控制。
 
@@ -89,7 +105,8 @@ uv run qodercn-tools --env-file /path/to/other.env
 | `API_KEY_FILE` | 密钥文件路径（相对项目根，或绝对路径），一行一个 key，`#` 为注释。**留空 ⇒ 不鉴权。** key 只允许 `A-Za-z0-9_-@+=&*` 且长度 ≤ 50；出现其他字符、超长 key、或无有效 key ⇒ 启动失败。 |
 | `RM_EXIF_INFO` | `true`/`false` —— 剥离生成图片中的 AIGC 追踪元数据（无损）。 |
 | `RM_BLIND_WM` | `true`/`false` —— 破坏隐藏盲水印的载荷（几何去同步 + 有损重编码，会轻微改动像素，且不一定生效）。 |
-| `IMAGEGEN_URL` / `WEBSEARCH_URL` / `IMAGESEARCH_URL` / `ASR_URL` / `POLISH_URL` | 各工具的路由路径（`ASR_URL` 是 WebSocket，`POLISH_URL` 是原样透传 POST，其余是 POST）。**不设置 ⇒ 不暴露该工具。** 全部不设置 / 路径非法 / 互相重合 ⇒ 启动失败。 |
+| `IMAGEGEN_URL` / `WEBSEARCH_URL` / `IMAGESEARCH_URL` / `ASR_URL` / `POLISH_URL` / `OPENAI_TRANSCRIPTIONS_URL` | 各工具的路由路径（`ASR_URL` 是 WebSocket，`POLISH_URL` 是原样透传 POST，`OPENAI_TRANSCRIPTIONS_URL` 是 OpenAI 兼容的 multipart 转写 POST，其余是 POST）。**不设置 ⇒ 不暴露该工具。** 全部不设置 / 路径非法 / 互相重合 ⇒ 启动失败。 |
+| `ASR_REALTIME_PACING` | `true`/`false`（默认 `false`）—— 转写时的默认推流节奏；仅在网关不返回时间戳时影响 `srt`/`vtt`/`verbose_json` 的分段时间精度。可被每次请求的 `stream_realtime` 覆盖。 |
 | `IP` | 绑定地址 / 暴露面（`127.0.0.1` 仅本机，`0.0.0.0` 所有网卡）。 |
 | `PORT` | 监听端口。`-1` ⇒ 自动挑一个空闲端口；端口被占用 ⇒ 启动失败。 |
 

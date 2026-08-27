@@ -8,12 +8,15 @@ WebSocket. All are cosy-signed per request against the configured base URL.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
+from dataclasses import dataclass, field
 
 import httpx
 import websockets
 
+from .audio import iter_frames, pcm_duration_ms
 from .cosy import DEFAULT_COSY_VERSION, build_headers, compact_json, new_uuid
 from .credentials import load_credential
 
@@ -33,6 +36,107 @@ class GatewayError(RuntimeError):
         super().__init__(f"gateway status {status}: {detail}")
         self.status = status
         self.detail = detail
+
+
+@dataclass
+class Segment:
+    start_ms: int
+    end_ms: int
+    text: str
+
+
+@dataclass
+class TranscriptResult:
+    text: str
+    segments: list[Segment] = field(default_factory=list)
+    language: str | None = None
+    duration_ms: int = 0
+
+
+# Candidate per-sentence timestamp keys the gateway (FunASR) may include, in ms.
+_TS_START_KEYS = ("begin_time", "start_time", "start", "bg")
+_TS_END_KEYS = ("end_time", "stop_time", "end", "ed")
+
+
+class AsrAccumulator:
+    """Reduces the gateway's ASR frames into finalized sentences with best-effort
+    timing. Pure/synchronous so it can be unit-tested without a WebSocket.
+
+    Timing priority (see the plan): (1) gateway-provided timestamps when present;
+    (2) otherwise the streamed-audio offset at arrival — only meaningful when the
+    caller paced the send (used_pacing=True); (3) otherwise a proportional split of
+    the total audio duration, applied at result() time.
+    """
+
+    def __init__(self) -> None:
+        self._sentences: list[Segment] = []
+        self._done = False
+        self._last_end_ms = 0
+        self._have_gateway_ts = False
+
+    @property
+    def done(self) -> bool:
+        return self._done
+
+    @staticmethod
+    def _extract_ts(frame: dict) -> tuple[int | None, int | None]:
+        def pick(keys: tuple[str, ...]) -> int | None:
+            for k in keys:
+                v = frame.get(k)
+                if isinstance(v, bool):
+                    continue
+                if isinstance(v, (int, float)):
+                    return int(v)
+            return None
+
+        return pick(_TS_START_KEYS), pick(_TS_END_KEYS)
+
+    def feed(self, frame: dict, stream_offset_ms: int) -> None:
+        ftype = frame.get("type")
+        if ftype == "speech_completed":
+            text = (frame.get("message") or "").strip()
+            if not text:
+                return
+            start, end = self._extract_ts(frame)
+            if start is not None and end is not None:
+                self._have_gateway_ts = True
+            else:
+                start, end = self._last_end_ms, max(stream_offset_ms, self._last_end_ms)
+            self._sentences.append(Segment(start_ms=start, end_ms=end, text=text))
+            self._last_end_ms = end
+        elif ftype == "speech_done":
+            status = frame.get("status", 200)
+            if status not in (None, 200):
+                raise GatewayError(int(status), "asr did not complete cleanly")
+            self._done = True
+        elif ftype == "speech_err":
+            raise GatewayError(int(frame.get("code") or 500), str(frame.get("message") or "asr error"))
+        # speech_delta (partial) is intentionally ignored for the final transcript.
+
+    @staticmethod
+    def _proportional(segments: list[Segment], total_ms: int) -> list[Segment]:
+        if not segments or total_ms <= 0:
+            return segments
+        total_chars = sum(max(len(s.text), 1) for s in segments)
+        out: list[Segment] = []
+        cursor = 0
+        for i, s in enumerate(segments):
+            if i == len(segments) - 1:
+                end = total_ms
+            else:
+                end = cursor + int(total_ms * max(len(s.text), 1) / total_chars)
+            out.append(Segment(start_ms=cursor, end_ms=max(end, cursor), text=s.text))
+            cursor = out[-1].end_ms
+        return out
+
+    def result(self, total_duration_ms: int, language: str | None, used_pacing: bool) -> TranscriptResult:
+        segments = list(self._sentences)
+        if not self._have_gateway_ts and not used_pacing:
+            segments = self._proportional(segments, total_duration_ms)
+        text = " ".join(s.text for s in segments).strip()
+        return TranscriptResult(
+            text=text, segments=segments, language=language, duration_ms=total_duration_ms
+        )
 
 
 def _asr_injected_headers() -> dict[str, str]:
@@ -109,6 +213,82 @@ class GatewayClient:
             close_timeout=5,
             max_size=None,  # transcripts are small; audio is client->server only
         )
+
+    async def transcribe(
+        self,
+        pcm: bytes,
+        *,
+        sample_rate: int,
+        channels: int,
+        bit_depth: int,
+        frame_ms: int,
+        language: str | None = None,
+        pacing: bool = False,
+    ) -> TranscriptResult:
+        """Batch-transcribe raw PCM by streaming it over the ASR WebSocket.
+
+        Reuses asr_connect() (declaring the audio format via headers), streams the
+        PCM as frames, sends the closing text frame, and reduces the gateway's
+        replies into a TranscriptResult. When pacing is True the frames are sent at
+        ~1x realtime so result arrival correlates to stream position (better subtitle
+        timing when the gateway returns no timestamps). Raises GatewayError on failure.
+        """
+        forward = {
+            "SampleRate": str(sample_rate),
+            "Channels": str(channels),
+            "BitDepth": str(bit_depth),
+            "FrameDurationMs": str(frame_ms),
+        }
+        if language:
+            forward["Accept-Language"] = language
+
+        total_ms = pcm_duration_ms(pcm, sample_rate, channels, bit_depth)
+        upstream = await self.asr_connect(forward_headers=forward)
+        acc = AsrAccumulator()
+        progress = {"sent_ms": 0}
+
+        async def sender() -> None:
+            for offset_ms, chunk in iter_frames(pcm, sample_rate, channels, bit_depth, frame_ms):
+                await upstream.send(chunk)
+                progress["sent_ms"] = offset_ms + frame_ms
+                if pacing:
+                    await asyncio.sleep(frame_ms / 1000.0)
+            progress["sent_ms"] = total_ms
+            await upstream.send(json.dumps({"type": "voice_completed", "message": "close by user"}))
+
+        async def receiver() -> None:
+            async for frame in upstream:
+                if isinstance(frame, (bytes, bytearray)):
+                    continue
+                try:
+                    data = json.loads(frame)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if isinstance(data, dict):
+                    acc.feed(data, min(progress["sent_ms"], total_ms))
+                    if acc.done:
+                        return
+
+        send_task = asyncio.create_task(sender())
+        send_exc: Exception | None = None
+        try:
+            await asyncio.wait_for(receiver(), timeout=self._ws_timeout)
+        except asyncio.TimeoutError:
+            raise GatewayError(504, "asr transcription timed out")
+        finally:
+            if not send_task.done():
+                send_task.cancel()
+            try:
+                await send_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:  # surface a send failure only if nothing completed
+                send_exc = exc
+            await upstream.close()
+
+        if send_exc is not None and not acc.done:
+            raise GatewayError(502, f"asr send failed: {send_exc}")
+        return acc.result(total_ms, language, used_pacing=pacing)
 
     async def _post_signed(self, path: str, body: str, params: dict | None = None) -> dict:
         """Cosy-signed POST of a raw JSON body; returns parsed JSON or raises GatewayError."""
